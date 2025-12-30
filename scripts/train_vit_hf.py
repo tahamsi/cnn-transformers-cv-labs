@@ -6,7 +6,8 @@ import sys
 
 import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import ClassLabel, Dataset, Features, Image, load_dataset
+from torchvision import datasets as tv_datasets
 from transformers import (AutoImageProcessor, Trainer, TrainingArguments,
                           ViTForImageClassification)
 
@@ -22,6 +23,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--hf-token", default=None, help="Optional Hugging Face token")
+    parser.add_argument("--no-auth", action="store_true", help="Disable HF auth and use public access")
     args = parser.parse_args()
 
     data_root = os.path.join(ROOT, "data")
@@ -36,23 +39,58 @@ def main() -> None:
     else:
         dataset = load_dataset("cifar10")
 
-    processor = AutoImageProcessor.from_pretrained(args.model)
+    if "image" not in dataset["train"].features:
+        print("HF dataset cache missing image column; falling back to torchvision CIFAR-10.")
+        train_tv = tv_datasets.CIFAR10(root=data_root, train=True, download=True)
+        test_tv = tv_datasets.CIFAR10(root=data_root, train=False, download=True)
+        labels = list(train_tv.classes)
+        features = Features(
+            {
+                "image": Image(),
+                "label": ClassLabel(names=labels),
+            }
+        )
+
+        train_dict = {"image": [img for img, _ in train_tv], "label": [lbl for _, lbl in train_tv]}
+        test_dict = {"image": [img for img, _ in test_tv], "label": [lbl for _, lbl in test_tv]}
+        dataset = {
+            "train": Dataset.from_dict(train_dict, features=features),
+            "test": Dataset.from_dict(test_dict, features=features),
+        }
+
+    if args.no_auth:
+        token = False
+    else:
+        token = args.hf_token or os.getenv("HF_TOKEN") or None
+
+    processor = AutoImageProcessor.from_pretrained(args.model, token=token)
 
     def preprocess(example):
         image = example["image"]
         inputs = processor(image, return_tensors="pt")
-        example["pixel_values"] = inputs["pixel_values"][0]
-        example["labels"] = example["label"]
-        return example
+        if isinstance(image, list):
+            return {
+                "pixel_values": inputs["pixel_values"],
+                "labels": example["label"],
+            }
+        return {
+            "pixel_values": inputs["pixel_values"][0],
+            "labels": example["label"],
+        }
 
-    dataset = dataset.with_transform(preprocess)
-    label_names = dataset["train"].features["label"].names
+    if isinstance(dataset, dict):
+        dataset = {k: v.with_transform(preprocess) for k, v in dataset.items()}
+        label_names = dataset["train"].features["label"].names
+    else:
+        dataset = dataset.with_transform(preprocess)
+        label_names = dataset["train"].features["label"].names
 
     model = ViTForImageClassification.from_pretrained(
         args.model,
         num_labels=len(label_names),
         id2label={i: l for i, l in enumerate(label_names)},
         label2id={l: i for i, l in enumerate(label_names)},
+        token=token,
     )
 
     def collate_fn(batch):

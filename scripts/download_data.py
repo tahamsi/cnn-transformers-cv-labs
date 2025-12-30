@@ -71,9 +71,25 @@ def download_fallback_cifar10(data_root: str) -> None:
 
 def init_detection_and_segmentation(data_root: str) -> None:
     print("Preparing Penn-Fudan Pedestrian (detection)...")
-    datasets.PennFudanPed(root=data_root, download=True)
+    try:
+        dataset_cls = getattr(datasets, "PennFudanPed")
+        dataset_cls(root=data_root, download=True)
+    except AttributeError:
+        _download_penn_fudan(data_root)
     print("Preparing Oxford-IIIT Pet (segmentation)...")
     datasets.OxfordIIITPet(root=data_root, download=True, target_types="segmentation")
+
+
+def _download_penn_fudan(data_root: str) -> None:
+    url = "https://www.cis.upenn.edu/~jshi/ped_html/PennFudanPed.zip"
+    zip_path = os.path.join(data_root, "PennFudanPed.zip")
+    target_dir = os.path.join(data_root, "PennFudanPed")
+    if os.path.isdir(target_dir):
+        return
+    print("Penn-Fudan dataset class not available; downloading manually...")
+    urllib.request.urlretrieve(url, zip_path)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(data_root)
 
 
 def main() -> None:
